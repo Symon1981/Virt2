@@ -1,0 +1,290 @@
+heat_template_version: 2017-02-24
+
+description: >
+  A Heat Orchestration Template to create Virtuozzo Infrastructure Platform based on
+  Virtuozzo Storage (VStorage) Cluster.
+  VStorage is software defined distributed storage, which allows you to build fault-tolerant,
+  multi-machine storage clusters using existing or off-the-shelf hardware to enable highly
+  flexible, distributed storage that is scalable to your needs, and comes with built-in
+  replication to ensure the safety of your data. Read more at [1].
+  [1] https://virtuozzo.com/products/virtuozzo-storage/
+
+parameters:
+
+  key_name:
+    type: string
+    description: Name of a KeyPair to enable SSH access to the instance
+
+  instance_type:
+    type: string
+    description: Instance type for all servers
+    default: vzip
+    constraints:
+      - allowed_values: [vzip, virtuozzo]
+        description: instance_type must have an ephemeral disk
+
+  image_id:
+    type: string
+    description: >
+      Name or ID of the image to use for the VStorage servers.
+      They should be build from Virtuozzo distribution.
+      See disk image builder help.
+    default: vz7-vm-template
+
+  cluster_name:
+    type: string
+    description: VStorage cluster name
+    constraints:
+      - length: { min: 1, max: 64 }
+        description: cluster name must be between 1 and 64 characters
+        description: >
+          cluster_name must begin with a letter and contain only alphanumeric
+          characters
+
+  cluster_password:
+    type: string
+    description: Newly created VStorage Cluster admin account password
+    hidden: true
+
+  storage_net_id:
+    type: string
+    description: ID of Neutron network into which servers get deployed
+    default: storage
+
+  storage_subnet_id:
+    type: string
+    description: ID of Neutron sub network into which servers get deployed
+    default: storage-subnet
+
+  api_net_id:
+    type: string
+    description: ID of Neutron network into which servers get deployed
+    default: api
+
+  api_subnet_id:
+    type: string
+    description: ID of Neutron sub network into which servers get deployed
+    default: api-subnet
+
+  external_net_id:
+    type: string
+    description: ID of Neutron network into which servers get deployed
+    default: external
+
+  external_subnet_id:
+    type: string
+    description: ID of Neutron sub network into which servers get deployed
+    default: ext-subnet
+
+  private_net_id:
+    type: string
+    description: ID of Neutron network into which servers get deployed
+    default: private
+
+  private_subnet_id:
+    type: string
+    description: ID of Neutron sub network into which servers get deployed
+    default: private-subnet
+
+  timeout1:
+    type: number
+    description: Timeout for WaitCondition for First Server
+    default: 400
+
+  timeout2:
+    type: number
+    description: Timeout for WaitCondition for Resource Group
+    default: 1800
+
+  cluster_size:
+    type: number
+    description: The Number of VMs in cluster
+    default: 4
+
+resources:
+
+  wait_condition:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: { get_resource: wait_handle }
+      count: 1
+      timeout: {get_param: timeout1}
+
+  wait_handle:
+    type: OS::Heat::WaitConditionHandle
+
+  wait_handle_group:
+    type: OS::Heat::WaitConditionHandle
+
+  wait_condition_group:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: { get_resource: wait_handle_group }
+      count: {get_param: cluster_size}
+      timeout: {get_param: timeout2}
+
+  key_gen:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      inputs:
+        - name: user_name
+      outputs:
+        - name: id_rsa_pub
+      group: script
+      config: |
+        #!/bin/bash
+        su - ${user_name} << EOF > ${heat_outputs_path}.id_rsa_pub
+        test -f .ssh/id_rsa.pub || ssh-keygen -q -t rsa -N "" -f .ssh/id_rsa
+        cat .ssh/id_rsa.pub >> .ssh/authorized_keys
+        cat .ssh/id_rsa.pub
+        EOF
+
+  key_add:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      inputs:
+        - name: id_rsa_pub
+        - name: user_name
+      group: script
+      config: |
+        #!/bin/bash
+        echo "${id_rsa_pub}" | su - $user_name -c 'tee -a .ssh/authorized_keys'
+
+  do_key_gen:
+    type: OS::Heat::SoftwareDeployment
+    properties:
+      input_values:
+        user_name: root
+      config: { get_resource: key_gen }
+      server: { get_attr: [first_server, server_id] }
+
+  do_key_add:
+    type: OS::Heat::SoftwareDeploymentGroup
+    depends_on: wait_condition_group
+    properties:
+      input_values:
+        user_name: root
+        id_rsa_pub: { get_attr: [do_key_gen, id_rsa_pub] }
+      config: { get_resource: key_add }
+      servers: { get_attr: [server_group, attributes, server_id] }
+
+  deploy_vzip:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      inputs:
+        - name: master_host
+        - name: master_ip_address
+        - name: host_names
+        - name: ip_addresses
+        - name: ext_vip_address
+        - name: vip_address
+        - name: cluster_name
+        - name: cluster_password
+        - name: keepaliveid
+      outputs:
+        - name: admin-openrc
+      group: script
+      config: { get_file: vzip_install.py }
+
+  port_api:
+    type: OS::Neutron::Port
+    properties:
+      port_security_enabled: False
+      network_id: { get_param: api_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: api_subnet_id }
+
+  ext_port:
+    type: OS::Neutron::Port
+    properties:
+      port_security_enabled: False
+      network_id: { get_param: external_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: external_subnet_id }
+
+
+  random:
+    type: OS::Heat::RandomString
+    properties:
+      length: 2
+      sequence: digits
+
+  do_deploy_vzip:
+    type: OS::Heat::SoftwareDeployment
+    depends_on: do_key_add
+    properties:
+      input_values:
+        master_host: { get_attr: [first_server, host_name] }
+        master_ip_address: { get_attr: [first_server, ip_address] }
+        host_names: { get_attr: [server_group, attributes, host_name] }
+        ip_addresses: { get_attr: [server_group, attributes, ip_address] }
+        ext_vip_address: { get_attr: [ext_port, fixed_ips, 0, ip_address] }
+        vip_address: { get_attr: [port_api, fixed_ips, 0, ip_address] }
+        cluster_name: { get_param: cluster_name }
+        cluster_password: { get_param: cluster_password}
+        keepaliveid: {get_resource: random}
+      config: { get_resource: deploy_vzip }
+      server: { get_attr: [first_server, server_id] }
+
+  server_group:
+    type: OS::Heat::ResourceGroup
+    depends_on: wait_condition
+    properties:
+      count: { get_param: cluster_size }
+      resource_def:
+        type: VZ::Storage::Server
+        properties:
+          name: slave%index%
+          image_id: { get_param: image_id}
+          key_name: { get_param: key_name}
+          instance_type: {get_param: instance_type}
+          storage_net_id: {get_param: storage_net_id}
+          storage_subnet_id: {get_param: storage_subnet_id}
+          api_net_id: {get_param: api_net_id}
+          api_subnet_id: {get_param: api_subnet_id}
+          external_net_id: {get_param: external_net_id}
+          external_subnet_id: {get_param: external_subnet_id}
+          private_net_id: {get_param: private_net_id}
+          private_subnet_id: {get_param: private_subnet_id}
+          cluster_password: { get_param: cluster_password}
+          cluster_name: { get_param: cluster_name}
+          wc_notify: { get_attr: ['wait_handle_group', 'curl_cli'] }
+
+  first_server:
+    type: VZ::Storage::Server
+    properties:
+      name: "master"
+      image_id: { get_param: image_id}
+      key_name: { get_param: key_name}
+      instance_type: {get_param: instance_type}
+      storage_net_id: {get_param: storage_net_id}
+      storage_subnet_id: {get_param: storage_subnet_id}
+      api_net_id: {get_param: api_net_id}
+      api_subnet_id: {get_param: api_subnet_id}
+      external_net_id: {get_param: external_net_id}
+      external_subnet_id: {get_param: external_subnet_id}
+      private_net_id: {get_param: private_net_id}
+      private_subnet_id: {get_param: private_subnet_id}
+      cluster_password: { get_param: cluster_password}
+      cluster_name: { get_param: cluster_name}
+      wc_notify: { get_attr: ['wait_handle', 'curl_cli'] }
+
+outputs:
+  server_list:
+    description: >
+      This is a list of server names that are part of the group.
+    value: {get_attr: [server_group, show]}
+  server_ip:
+    description: >
+      This is a list of first ip addresses of the servers in the group
+      for a specified network.
+    value: {get_attr: [first_server, networks, {get_param: storage_net_id}, 0]}
+  do_key_add_status:
+    description: Status code of configuration execution.
+    value: { get_attr: [do_key_add, deploy_status_code] }
+  do_key_add_stdout:
+    description: Standard output captured from the configuration execution.
+    value: { get_attr: [do_key_add, deploy_stdout] }
+  do_key_add_stderr:
+    description: Standard error captured from the configuration execution.
+    value: { get_attr: [do_key_add, deploy_stderr] }
