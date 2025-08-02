@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+#
+# source vzrc [--host_ip HOST_IP] [--password PASSWORD] [--use_provider_network true|false]
+#             [--virt_type vz|qemu|kvm] [--images_type ploop|qcow2] [--fixed_range FIXED_RANGE]
+#             [--floating_range FLOATING_RANGE] [--floating_pool FLOATING_POOL]
+#             [--public_gateway PUBLIC_GATEWAY] [--gateway GATEWAY]
+#             [--mode MODE] [--vzstorage CLUSTER_NAME] [--existing_cluster true|false]
+#             [--fwaas true|false] [--lbaas true|false] [--telemetry true|false]
+#             [--controller CONTROLLER_IP] [--dest DEST]
+
+HOST_IP=
+PASSWORD=
+FIXED_RANGE=
+FLOATING_RANGE=
+FLOATING_POOL=
+PUBLIC_GATEWAY=
+GATEWAY=
+USE_PROVIDERNET=
+MODE=
+CONTROLLER_IP=
+DEST=
+SETUP_VZSTORAGE=
+VZSTORAGE_CLUSTER_NAME=
+VZSTORAGE_EXISTING_CLUSTER=
+VIRT_TYPE=
+IMAGES_TYPE=
+FWAAS=
+LBAAS=
+TELEMETRY=
+
+while [[ $# -gt 1 ]]
+do
+key="$1"
+
+case $key in
+    --use_provider_network)
+    USE_PROVIDERNET=$2
+    shift
+    ;;
+    -h|--host_ip)
+    HOST_IP="$2"
+    shift
+    ;;
+    -p|--password)
+    PASSWORD="$2"
+    shift
+    ;;
+    --fixed_range)
+    FIXED_RANGE="$2"
+    shift
+    ;;
+    --floating_range)
+    FLOATING_RANGE="$2"
+    shift
+    ;;
+    --public_gateway)
+    PUBLIC_GATEWAY="$2"
+    shift
+    ;;
+    --gateway)
+    GATEWAY="$2"
+    shift
+    ;;
+    --floating_pool)
+    FLOATING_POOL="$2"
+    shift
+    ;;
+    -m|--mode)
+    MODE="$2"
+    shift
+    ;;
+    -c|--controller)
+    CONTROLLER_IP="$2"
+    shift
+    ;;
+    -d|--dest)
+    DEST="$2"
+    shift
+    ;;
+    --vzstorage)
+    VZSTORAGE_CLUSTER_NAME="$2"
+    shift
+    ;;
+    --existing_cluster)
+    VZSTORAGE_EXISTING_CLUSTER="$2"
+    shift
+    ;;
+    --virt_type)
+    VIRT_TYPE="$2"
+    shift
+    ;;
+    --images_type)
+    IMAGES_TYPE="$2"
+    shift
+    ;;
+    --fwaas)
+    FWAAS="$2"
+    shift
+    ;;
+    --lbaas)
+    LBAAS="$2"
+    shift
+    ;;
+    --telemetry)
+    TELEMETRY="$2"
+    shift
+    ;;
+    *)
+    # unknown option
+    echo "unknown option $1"
+    ;;
+esac
+shift # past argument or value
+done
+
+export HOST_IP
+export VIRT_TYPE=${VIRT_TYPE:-vz}
+export PASSWORD=${PASSWORD:-1q2w3e}
+export FIXED_RANGE=${FIXED_RANGE:-"10.0.0.0/24"}
+export GATEWAY=${GATEWAY:-"10.0.0.1"}
+export FLOATING_RANGE=${FLOATING_RANGE:-"172.18.161.0/24"}
+export FLOATING_POOL=${FLOATING_POOL:-"start=172.18.161.150,end=172.18.161.254"}
+export PUBLIC_GATEWAY=${PUBLIC_GATEWAY:-"172.18.161.1"}
+export USE_PROVIDERNET=${USE_PROVIDERNET:-False}
+export MODE=${MODE:-ALL}
+export CONTROLLER_IP
+export DEST=${DEST:-/vz/stack}
+export IMAGES_TYPE=${IMAGES_TYPE:-ploop}
+export FWAAS=${FWAAS:-false}
+export LBAAS=${LBAAS:-false}
+export TELEMETRY=${TELEMETRY:-false}
+
+if [[ "$VZSTORAGE_CLUSTER_NAME" != "" ]]; then
+SETUP_VZSTORAGE=True
+fi
+
+export SETUP_VZSTORAGE=${SETUP_VZSTORAGE:-False}
+export VZSTORAGE_CLUSTER_NAME
+export VZSTORAGE_EXISTING_CLUSTER=${VZSTORAGE_EXISTING_CLUSTER:-True}
+
+echo "Host IP address: " $HOST_IP
+echo "Password: " $PASSWORD
+echo "Virt type: " $VIRT_TYPE
+echo "Images type: " $IMAGES_TYPE
+echo "Using provider network: " $USE_PROVIDERNET
+echo "Private range: " $FIXED_RANGE
+echo "Gateway: " $GATEWAY
+echo "Public range: " $FLOATING_RANGE
+echo "Public pool: " $FLOATING_POOL
+echo "Public gateway: " $PUBLIC_GATEWAY
+echo "Mode: " $MODE
+echo "Controller host: " $CONTROLLER_IP
+echo "Stack user home: " $DEST
+echo "Using vzstorage: " $SETUP_VZSTORAGE
+echo "vzstorage cluster name: " $VZSTORAGE_CLUSTER_NAME
+echo "vzstorage existing cluster: " $VZSTORAGE_EXISTING_CLUSTER
+echo "Telemetry: " $TELEMETRY
+echo "FWaaS: " $FWAAS
+echo "LBaaS: " $LBAAS
+
