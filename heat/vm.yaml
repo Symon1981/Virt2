@@ -1,0 +1,211 @@
+heat_template_version: 2017-02-24
+
+parameters:
+  name:
+    type: string
+
+  key_name:
+    type: string
+
+  instance_type:
+    type: string
+
+  image_id:
+    type: string
+
+  cluster_name:
+    type: string
+
+  cluster_password:
+    type: string
+
+  wc_notify:
+    type: string
+
+  storage_net_id:
+    type: string
+
+  storage_subnet_id:
+    type: string
+
+  api_net_id:
+    type: string
+
+  api_subnet_id:
+    type: string
+
+  external_net_id:
+    type: string
+
+  external_subnet_id:
+    type: string
+
+  private_net_id:
+    type: string
+
+  private_subnet_id:
+    type: string
+
+resources:
+
+  port_external:
+    type: OS::Neutron::Port
+    properties:
+      port_security_enabled: False
+      network_id: { get_param: external_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: external_subnet_id }
+
+  port_api:
+    type: OS::Neutron::Port
+    properties:
+      port_security_enabled: False
+      network_id: { get_param: api_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: api_subnet_id }
+
+  port_private:
+    type: OS::Neutron::Port
+    properties:
+      port_security_enabled: False
+      network_id: { get_param: private_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: private_subnet_id }
+
+  port_storage:
+    type: OS::Neutron::Port
+    properties:
+      port_security_enabled: False
+      network_id: { get_param: storage_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: storage_subnet_id }
+
+  server:
+    type: OS::Nova::Server
+    properties:
+      flavor: { get_param: instance_type }
+      image: { get_param: image_id}
+      key_name: { get_param: key_name }
+      name:
+        str_replace:
+          template: cluster-vm
+          params:
+            cluster: {get_param: cluster_name}
+            vm: { get_param: name }
+      networks:
+        - port: { get_resource: port_api }
+        - port: { get_resource: port_private }
+        - port: { get_resource: port_storage }
+        - port: { get_resource: port_external }
+      user_data_format: SOFTWARE_CONFIG
+      user_data:
+        str_replace_strict:
+          template: |
+            #!/bin/bash -ve
+            sed -i '/include=\/etc\/yum\/virtuozzo-excludes/d' /etc/yum.conf
+            sed -i '/PasswordAuthentication no/d' /etc/ssh/sshd_config
+
+            cat > /etc/yum.repos.d/vz-hci.repo <<EOF
+            [vz-hci]
+            name=Virtuozzo HCI
+            baseurl=http://kojistorage.eng.sw.ru/mash/os-ocata-vz7-rtm/latest/x86_64/os/
+            priority=40
+            enabled=1
+            gpgcheck=0
+            EOF
+
+            yum -y install vstorage-metadata-server vstorage-chunk-server vstorage-client kolla-ansible
+
+            echo cluster_password | passwd root --stdin
+
+            iptables -A INPUT -s storage_ipaddr/24 -m comment --comment "001 vstorage incoming" -j ACCEPT
+
+            devname=$(lsblk -a -o NAME,FSTYPE,MOUNTPOINT,LABEL | grep swap | grep -v SWAP | awk '{print $1}')
+            if [[ "$devname" != "" ]]; then
+                swapon /dev/$devname
+            fi
+
+            lsblk -a -o NAME,FSTYPE,MOUNTPOINT,LABEL
+            devname=$(lsblk -a -o NAME,FSTYPE,MOUNTPOINT,LABEL | grep ephemeral | awk '{print $1}')
+            csdir=/vstorage/cluster_name-cs
+
+            if [[ ! -d $csdir ]]; then
+            echo "Device name: $devname"
+            mkdir -p $csdir
+            unitname=$(systemd-escape -p --suffix=mount "$csdir")
+            echo "Unit name: $unitname"
+
+            cat > /etc/systemd/system/$unitname <<EOF
+            [Unit]
+            Description=VStorage Chunk Server Disk Mount
+            Before=vstorage-csd.target
+            [Mount]
+            What=/dev/$devname
+            Where=$csdir
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl start "$unitname"
+            fi
+
+            if ! echo cluster_password | vstorage -c cluster_name auth-node -P ; then
+                echo "Creating a new cluster 'cluster_name'..."
+                echo cluster_password | vstorage -c cluster_name make-mds -I -a storage_ipaddr -r /vstorage/cluster_name-mds -P
+                echo "Creating a new cluster 'cluster_name'...done"
+            else
+                if ! vstorage -c cluster_name list-services -M | grep -q /vstorage/cluster_name-mds; then
+                    ret=1
+                    set +e
+                    while [ "$ret" != "0" ]
+                    do
+                        echo "Adding a new MDS to cluster 'cluster_name'..."
+                        vstorage -c cluster_name make-mds -a storage_ipaddr -r /vstorage/cluster_name-mds
+                        ret=$?
+                        echo "Adding a new MDS to cluster 'cluster_name'...done (error=$ret)"
+                        sleep 1
+                    done
+                    set -e
+                fi
+            fi
+
+            systemctl start vstorage-mdsd.target
+
+            if ! vstorage -c cluster_name list-services -C | grep -q $csdir/data; then
+                ret=1
+                set +e
+                while [ "$ret" != "0" ]
+                do
+                    echo "Adding a new CS to cluster 'cluster_name'..."
+                    vstorage -c cluster_name make-cs -r $csdir/data
+                    ret=$?
+                    echo "Adding a new CS to cluster 'cluster_name'...done (error=$ret)"
+                    sleep 1
+                done
+                set -e
+            fi
+
+            systemctl start vstorage-csd.target
+
+            modprobe vzevent
+
+            wc_notify --data-binary '{"status": "SUCCESS"}'
+
+          params:
+            cluster_name: { get_param: cluster_name }
+            cluster_password: { get_param: cluster_password }
+            storage_ipaddr: { get_attr: [port_storage, fixed_ips, 0, ip_address] }
+            wc_notify: { get_param: wc_notify }
+
+outputs:
+  server_id:
+    value: {get_resource: server}
+    description: server id
+  host_name:
+    value: {get_attr: [server, name] }
+    description: server hostname
+  ip_address:
+    value: { get_attr: [port_api, fixed_ips, 0, ip_address] }
+    description: server API network IP address
+
